@@ -4,8 +4,33 @@
 import * as Phaser from "phaser";
 
 interface ICoords {
-  x: number;
-  y: number;
+  [key: string]: {
+    x: number;
+    y: number;
+    frame: number;
+  }
+}
+
+function uuid(
+  a?: any               // placeholder
+): string {
+  return a              // if the placeholder was passed, return
+    ? (                 // a random number from 0 to 15
+      a ^               // unless b is 8,
+      Math.random()     // in which case
+      * 16              // a random number from
+      >> a / 4          // 8 to 11
+    ).toString(16)      // in hexadecimal
+    : (                 // or otherwise a concatenated string:
+      1e7.toString() +  // 10000000 +
+      -1e3 +            // -1000 +
+      -4e3 +            // -4000 +
+      -8e3 +            // -80000000 +
+      -1e11             // -100000000000,
+    ).replace(          // replacing
+      /[018]/g,         // zeroes, ones, and eights with
+      uuid              // random hex digits
+    )
 }
 
 class GameScene extends Phaser.Scene {
@@ -13,7 +38,10 @@ class GameScene extends Phaser.Scene {
   private PORT = 8080; // change this if needed
 
   private wsClient?: WebSocket;
-  private sprite?: Phaser.GameObjects.Sprite;
+  // private sprite?: Phaser.GameObjects.Sprite;
+
+  private id = uuid();
+  private players: {[key: string]: Phaser.GameObjects.Sprite} = {};
 
   constructor() { super({ key: "GameScene" }); }
 
@@ -65,13 +93,29 @@ class GameScene extends Phaser.Scene {
     }
 
     this.wsClient.onmessage = (wsMsgEvent) => {
-      console.log(wsMsgEvent);
-      wsMsgEvent.data;
-      const actorCoordinates: ICoords = JSON.parse(wsMsgEvent.data);
-      // Sprite may not have been initialized yet
-      if (this.sprite) {
-        this.sprite.x = actorCoordinates.x;
-        this.sprite.y = actorCoordinates.y;
+      const allCoords: ICoords = JSON.parse(wsMsgEvent.data);
+      for (const playerId of Object.keys(allCoords)) {
+        if (playerId === this.id) {
+          // we don't need to update ourselves
+          continue;
+        }
+        const { x, y, frame } = allCoords[playerId];
+        if (playerId in this.players) {
+          // We have seen this player before, update it!
+          const player = this.players[playerId];
+          if (player.texture.key === "__MISSING") {
+            // Player was instantiated before texture was ready, reinstantiate
+            player.destroy();
+            this.players[playerId] = this.add.sprite(x, y, "player", frame);
+          } else {
+            player.setX(x);
+            player.setY(y);
+            player.setFrame(frame);  
+          }
+        } else {
+          // We have not seen this player before, create it!
+          this.players[playerId] = this.add.sprite(x, y, "player", frame);
+        }
       }
     }
   }
@@ -81,10 +125,44 @@ class GameScene extends Phaser.Scene {
    */
   public create() {
     // Create an interactive, draggable bunny sprite
-    this.sprite = this.add.sprite(100, 100, "bunny");
-    this.sprite.setInteractive();
-    this.input.setDraggable(this.sprite);
+    // this.sprite = this.add.sprite(100, 100, "bunny");
+    // this.sprite.setInteractive();
+    // this.input.setDraggable(this.sprite);
+    this.players[this.id] = this.physics.add.sprite(48, 48, "player", 1);
+    this.physics.add.collider(this.players[this.id], layer);
+    this.cameras.main.startFollow(this.players[this.id]);
   }
+
+  // update
+  public update() {
+    let moving = false;
+
+    for (const playerId of Object.keys(this.players)) {
+      const player = this.players[playerId];
+  
+      if (playerId !== this.id) {
+        player.setTint(0x0000aa); // so we can tell our guy apart
+        player.update();
+        continue;
+      }
+
+    if (this.leftKey && this.leftKey.isDown) {
+      (player.body as Phaser.Physics.Arcade.Body).setVelocityX(-this.VELOCITY);
+      player.play("left", true);
+      moving = true;
+    }
+    if (!moving) {
+      (player.body as Phaser.Physics.Arcade.Body).setVelocity(0);
+      player.anims.stop();
+    } else if (this.wsClient) {
+      this.wsClient.send(JSON.stringify({
+        id: this.id,
+        x: player.x,
+        y: player.y,
+        frame: player.frame.name
+      }));
+    }
+    player.update();
 }
 
 
